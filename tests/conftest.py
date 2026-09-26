@@ -105,7 +105,16 @@ class FakeServer:
                 turn = {
                     "id": f"turn-{len(thread['turns']) + 1}",
                     "status": "completed" if self.complete_turns else "inProgress",
-                    "items": [{"type": "agentMessage", "text": params["input"][0]["text"]}],
+                    "items": [
+                        {
+                            "type": "agentMessage",
+                            "text": (
+                                params["toolOutput"]["output"]
+                                if "toolOutput" in params
+                                else params["input"][0]["text"]
+                            ),
+                        }
+                    ],
                 }
                 thread["turns"].append(turn)
                 result = {"turn": turn}

@@ -1,8 +1,17 @@
 # Tests intentionally inspect local temporary artifacts synchronously.
 # ruff: noqa: ASYNC240
+import asyncio
+import json
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
+from websockets.asyncio.server import unix_serve
+
+from codex_thread_bridge.bridge import Bridge
+from codex_thread_bridge.ledger import Ledger
+from codex_thread_bridge.rpc import AppServer
 
 
 def git(cwd, *args):
@@ -37,6 +46,67 @@ def repository(tmp_path):
         "sandbox": "read-only",
         "expected_sandbox_policy": {"type": "readOnly", "networkAccess": False},
     }
+
+
+@pytest.mark.parametrize("operation", ["create", "worktree", "send"])
+async def test_dispatch_does_not_disconnect_concurrent_read(repository, tmp_path, operation):
+    read_received = asyncio.Event()
+    release_read = asyncio.Event()
+
+    async def handler(ws):
+        held_read = None
+        async for raw in ws:
+            message = json.loads(raw)
+            method, params = message["method"], message.get("params", {})
+            if method == "initialized":
+                continue
+            if method == "thread/list":
+                held_read = message["id"]
+                read_received.set()
+                continue
+            result = {}
+            if method == "thread/start":
+                result = {
+                    "thread": {"id": "thread", "cwd": params["cwd"]},
+                    "cwd": params["cwd"],
+                    "runtimeWorkspaceRoots": [params["cwd"]],
+                    "approvalPolicy": "never",
+                    "sandbox": {"type": "readOnly", "networkAccess": False},
+                }
+            elif method == "thread/read":
+                result = {"thread": {"status": {"type": "idle"}}}
+            elif method == "thread/resume":
+                result = {"approvalPolicy": "never"}
+            elif method == "turn/start":
+                result = {"turn": {"id": "turn"}}
+            await ws.send(json.dumps({"id": message["id"], "result": result}))
+            if method == "turn/start":
+                await release_read.wait()
+                await ws.send(json.dumps({"id": held_read, "result": {"data": []}}))
+
+    with tempfile.TemporaryDirectory(prefix="ctb-concurrent-") as directory:
+        path = Path(directory) / "app.sock"
+        async with unix_serve(handler, str(path)):
+            rpc = AppServer(path, timeout=5)
+            ledger = Ledger(tmp_path / "concurrent.sqlite3")
+            bridge = Bridge(rpc, ledger)
+            read = asyncio.create_task(bridge.list_threads())
+            try:
+                await asyncio.wait_for(read_received.wait(), 5)
+                if operation == "create":
+                    receipt = await bridge.create_thread("create", str(tmp_path), prompt="hello")
+                elif operation == "worktree":
+                    receipt = await bridge.create_worktree_thread(**repository, prompt="hello")
+                else:
+                    receipt = await bridge.send_message_to_thread("send", "thread", "hello")
+                assert receipt["status"] == "accepted", receipt
+                release_read.set()
+                assert await read == {"data": []}
+            finally:
+                release_read.set()
+                await rpc.close()
+                await asyncio.gather(read, return_exceptions=True)
+                ledger.close()
 
 
 async def test_readiness_launch_retains_exact_base_without_carrying_dirty_changes(
@@ -242,6 +312,13 @@ async def test_mcp_isolated_launch_and_followup_are_durable(fake_server, reposit
     assert len(fake.threads) == 1
     thread = fake.threads[receipts[0]["threadId"]]
     assert [t["items"][0]["text"] for t in thread["turns"]] == [args["prompt"], "FOLLOWUP"]
+    initial = next(params for method, params in fake.calls if method == "turn/start")
+    assert initial["input"] == []
+    assert initial["toolOutput"] == {
+        "name": "create_worktree_thread",
+        "namespace": "codex_thread_bridge",
+        "output": args["prompt"],
+    }
     assert receipts[0]["creation"]["reasoningEffort"] == "high"
 
 

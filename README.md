@@ -91,6 +91,12 @@ Each intentional new message requires a new `request_id`.
 - Project IDs belong to App Server's registry. Desktop controls its own project
   association and task listing. Worktrees created by the bridge have a manual
   lifecycle rather than a Desktop-managed lifecycle.
+- New and resumed turns carry bridge instructions as `toolOutput` with the bridge
+  tool's name. The bridge leaves client-side tool calls and approval requests
+  unanswered so it cannot consume another client's shared callback. A capable
+  client such as Desktop must be subscribed to the thread to handle them; the
+  bridge does not establish that subscription or provide interactive approvals.
+  Dispatch keeps the shared connection open so concurrent reads can finish.
 
 ## Development
 
@@ -115,5 +121,6 @@ behavior. Contribution requirements are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [RPC method definitions](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs)
 - [Request, response, and notification types](https://github.com/openai/codex/tree/main/codex-rs/app-server-protocol/src/protocol/v2)
 - [App Server implementation](https://github.com/openai/codex/tree/main/codex-rs/app-server/src)
+- [Shared callback routing in Codex 0.153.4](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/app-server/src/outgoing_message.rs)
 
 MIT licensed. Independent project, not affiliated with or endorsed by OpenAI.

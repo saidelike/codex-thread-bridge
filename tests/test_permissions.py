@@ -57,7 +57,15 @@ async def test_update_preserves_identity_and_messages_have_no_overrides(
         if method == "thread/resume":
             assert params == {"threadId": tid, "excludeTurns": True}
         elif method == "turn/start":
-            assert params == {"threadId": tid, "input": [{"type": "text", "text": "inspect"}]}
+            assert params == {
+                "threadId": tid,
+                "input": [],
+                "toolOutput": {
+                    "name": "send_message_to_thread",
+                    "namespace": "codex_thread_bridge",
+                    "output": "inspect",
+                },
+            }
     replay = await bridge.update_thread_permissions("update", tid, POLICY, expected, "on-request")
     assert replay["replayed"] and fake.count("thread/settings/update") == 1
 
