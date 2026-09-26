@@ -21,6 +21,12 @@ The default socket is `$CODEX_HOME/app-server-control/app-server-control.sock`;
 `CODEX_HOME` defaults to `~/.codex`. Use `--socket /path/to.sock` to override it.
 Authentication and model usage belong to the existing App Server.
 
+On Windows, the bridge uses `codex app-server proxy --sock` as a raw WebSocket
+byte relay. On Unix, it connects directly to the socket. Use `--transport proxy`
+to select the relay explicitly, and `--codex-binary /path/to/codex` if the CLI
+is not on `PATH`. The equivalent environment variables are
+`CODEX_THREAD_BRIDGE_TRANSPORT` and `CODEX_THREAD_BRIDGE_CODEX`.
+
 After changing bridge code or MCP configuration, request a refresh with:
 
 ```sh

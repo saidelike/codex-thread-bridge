@@ -244,9 +244,17 @@ def main():
         default=state_home / "codex-thread-bridge",
         help="Private durable operation ledger (keep across restarts)",
     )
+    parser.add_argument(
+        "--transport",
+        choices=("auto", "unix", "proxy"),
+        help="Control socket transport (auto uses the CLI proxy on Windows)",
+    )
+    parser.add_argument("--codex-binary", help="Codex CLI path for the proxy transport")
     args = parser.parse_args()
     socket_path, ledger = open_endpoint_ledger(args.socket, args.state_dir)
-    bridge = Bridge(AppServer(socket_path), ledger)
+    bridge = Bridge(
+        AppServer(socket_path, transport=args.transport, codex_binary=args.codex_binary), ledger
+    )
     make_server(bridge).run(transport="stdio")
 
 

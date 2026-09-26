@@ -1,14 +1,17 @@
-"""A multiplexed JSON-RPC client over the documented Unix WebSocket transport."""
+"""A multiplexed JSON-RPC client over Codex's local WebSocket control socket."""
 
 import asyncio
 import contextlib
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
 from websockets.asyncio.client import unix_connect
 
 from . import __version__
+from .proxy_transport import ProxyWebSocket
 
 
 class RpcError(Exception):
@@ -23,9 +26,19 @@ class TransportError(Exception):
 
 
 class AppServer:
-    def __init__(self, socket_path: Path, timeout: float = 20):
+    def __init__(
+        self,
+        socket_path: Path,
+        timeout: float = 20,
+        transport: str | None = None,
+        codex_binary: str | None = None,
+    ):
         self.socket_path = socket_path
         self.timeout = timeout
+        self.transport = transport or os.environ.get("CODEX_THREAD_BRIDGE_TRANSPORT", "auto")
+        if self.transport not in {"auto", "unix", "proxy"}:
+            raise ValueError("transport must be auto, unix, or proxy")
+        self.codex_binary = codex_binary
         self._ws = None
         self._reader = None
         self._pending: dict[int, asyncio.Future] = {}
@@ -39,15 +52,29 @@ class AppServer:
                 return
             await self.close()
             try:
-                self._ws = await unix_connect(
-                    str(self.socket_path),
-                    uri="ws://localhost/",
-                    open_timeout=self.timeout,
-                    close_timeout=2,
-                    max_size=16 * 1024 * 1024,
-                    # Codex 0.153.4 closes Unix handshakes offering permessage-deflate.
-                    compression=None,
-                )
+                if not self.socket_path.exists():
+                    raise FileNotFoundError(
+                        f"Codex control socket not found: {self.socket_path}. "
+                        "Use an existing daemon socket (--socket), or start the managed "
+                        "daemon with 'codex app-server daemon start'. The bridge does not "
+                        "start or replace app-servers."
+                    )
+                if self.transport == "proxy" or (
+                    self.transport == "auto" and sys.platform == "win32"
+                ):
+                    self._ws = await ProxyWebSocket.open(
+                        self.socket_path, self.timeout, self.codex_binary
+                    )
+                else:
+                    self._ws = await unix_connect(
+                        str(self.socket_path),
+                        uri="ws://localhost/",
+                        open_timeout=self.timeout,
+                        close_timeout=2,
+                        max_size=16 * 1024 * 1024,
+                        # Codex 0.153.4 closes Unix handshakes offering permessage-deflate.
+                        compression=None,
+                    )
                 self._reader = asyncio.create_task(self._receive())
                 self.info = await self._request(
                     "initialize",
