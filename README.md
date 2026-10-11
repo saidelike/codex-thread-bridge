@@ -1,7 +1,8 @@
 # codex-thread-bridge
 
-An MCP server for creating, messaging, and steering Codex tasks through a running
-App Server on the same host.
+An MCP bridge to an existing Codex App Server on the same host, providing an
+alternative to Codex Desktop or another client for thread operations. It
+reproduces native client requests while leaving execution to the App Server.
 
 ## Install
 

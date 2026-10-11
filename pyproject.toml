@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "codex-thread-bridge"
 version = "0.1.0"
-description = "An MCP bridge to a running Codex App Server on the same host"
+description = "An alternative MCP client for thread operations on an existing same-host Codex App Server"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
