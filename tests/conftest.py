@@ -17,6 +17,7 @@ class FakeServer:
         self.threads = {}
         self.settings = {}
         self.reject = {}
+        self.response_overrides = {}
         self.drop_after = None
         self.override_creation = {}
         self.approval_policy = "never"
@@ -170,6 +171,20 @@ class FakeServer:
                     "nextCursor": self.cursor(end) if end < len(turns) else None,
                     "backwardsCursor": self.cursor(start),
                 }
+            elif method == "thread/items/list":
+                entries = [
+                    {"turnId": turn["id"], "item": item}
+                    for turn in self.threads[params["threadId"]]["turns"]
+                    if "turnId" not in params or turn["id"] == params["turnId"]
+                    for item in turn["items"]
+                ]
+                start = self.offset(params.get("cursor"))
+                end = start + params["limit"]
+                result = {
+                    "data": entries[start:end],
+                    "nextCursor": self.cursor(end) if end < len(entries) else None,
+                    "backwardsCursor": self.cursor(start),
+                }
             elif method == "thread/list":
                 threads = [{**t, "turns": []} for t in self.threads.values()]
                 start = self.offset(params.get("cursor"))
@@ -187,6 +202,7 @@ class FakeServer:
                     json.dumps({"id": ident, "error": {"code": -32601, "message": method}})
                 )
                 continue
+            result.update(self.response_overrides.get(method, {}))
             # Exercise notification interleaving with every response.
             if method == self.pause_after:
                 self.paused.set()
