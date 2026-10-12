@@ -21,6 +21,20 @@ def absolute_directory(cwd: str):
 
 
 DISPLAY_FIELDS = frozenset({"text", "preview", "summary", "objective", "aggregatedOutput"})
+THREAD_SOURCE_KINDS = frozenset(
+    {
+        "cli",
+        "vscode",
+        "exec",
+        "appServer",
+        "subAgent",
+        "subAgentReview",
+        "subAgentCompact",
+        "subAgentThreadSpawn",
+        "subAgentOther",
+        "unknown",
+    }
+)
 SANDBOX_POLICY_TYPES = {
     "read-only": "readOnly",
     "workspace-write": "workspaceWrite",
@@ -91,6 +105,35 @@ def clipped(value, limit: int, *, display_text: bool = False):
     return value
 
 
+def relationship_evidence(thread):
+    """Keep native structural evidence; naming and task paths cannot establish ancestry."""
+    parents = []
+    if isinstance(thread.get("parentThreadId"), str) and thread["parentThreadId"]:
+        parents.append({"field": "parentThreadId", "threadId": thread["parentThreadId"]})
+    source = thread.get("source")
+    agent = source.get("subAgent") if isinstance(source, dict) else None
+    spawn = agent.get("thread_spawn") if isinstance(agent, dict) else None
+    if isinstance(spawn, dict) and isinstance(spawn.get("parent_thread_id"), str):
+        if spawn["parent_thread_id"]:
+            parents.append(
+                {
+                    "field": "source.subAgent.thread_spawn.parent_thread_id",
+                    "threadId": spawn["parent_thread_id"],
+                }
+            )
+    parent_ids = {parent["threadId"] for parent in parents}
+    status = "conflicting" if len(parent_ids) > 1 else "supported" if parents else "unknown"
+    if thread.get("id") in parent_ids:
+        status = "cyclic"
+    return {
+        "threadId": thread.get("id"),
+        "parentEvidence": parents,
+        "ancestryStatus": status,
+        "forkedFromId": thread.get("forkedFromId"),
+        "sessionId": thread.get("sessionId"),
+    }
+
+
 class Bridge:
     def __init__(self, rpc: AppServer, ledger: Ledger):
         self.rpc = rpc
@@ -114,6 +157,18 @@ class Bridge:
                 "bridgeManagedWorktrees": True,
                 "desktopProjectRegistry": False,
                 "clientSideToolsAndApprovals": False,
+                "threadDiscovery": {
+                    "filters": ["archived", "sourceKinds", "parentThreadId", "ancestorThreadId"],
+                    "stateDbOnly": True,
+                    "relationshipEvidence": [
+                        "parentThreadId",
+                        "source.subAgent.thread_spawn.parent_thread_id",
+                        "forkedFromId",
+                        "sessionId",
+                    ],
+                    "continuationMapping": "unsupported",
+                    "serverSupport": "experimental; each call can report an explicit gap",
+                },
             },
             "desktopVisibility": "Observed on Codex 0.153.4 with an existing project checkout; "
             "verify actual Desktop listing for each launch. Backend project IDs are separate.",
@@ -689,15 +744,116 @@ class Bridge:
         nonempty(thread_id, "thread_id", 128)
         return clipped(await self.rpc.call("thread/goal/get", {"threadId": thread_id}), 4000)
 
-    async def list_threads(self, cwd=None, limit=20, cursor=None):
+    async def list_threads(
+        self,
+        cwd=None,
+        limit=20,
+        cursor=None,
+        archived=False,
+        source_kinds=None,
+        parent_thread_id=None,
+        ancestor_thread_id=None,
+    ):
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
-        params = {"limit": limit, "useStateDbOnly": True}
+        if type(archived) is not bool:
+            raise ValueError("archived must be a boolean")
+        if parent_thread_id is not None and ancestor_thread_id is not None:
+            raise ValueError("parent_thread_id and ancestor_thread_id are mutually exclusive")
+        for name, value in (
+            ("parent_thread_id", parent_thread_id),
+            ("ancestor_thread_id", ancestor_thread_id),
+        ):
+            if value is not None:
+                nonempty(value, name, 128)
+        if source_kinds is not None and (
+            not isinstance(source_kinds, list)
+            or any(
+                not isinstance(kind, str) or kind not in THREAD_SOURCE_KINDS
+                for kind in source_kinds
+            )
+        ):
+            raise ValueError(
+                "source_kinds must be a list of supported native ThreadSourceKind values"
+            )
+        params = {"limit": limit, "useStateDbOnly": True, "archived": archived}
+        if source_kinds is not None:
+            params["sourceKinds"] = source_kinds
+        if parent_thread_id is not None:
+            params["parentThreadId"] = parent_thread_id
+        if ancestor_thread_id is not None:
+            params["ancestorThreadId"] = ancestor_thread_id
         if cwd is not None:
             params["cwd"] = absolute_directory(cwd)
         if cursor is not None:
             params["cursor"] = cursor
-        return clipped(await self.rpc.call("thread/list", params), 4000)
+        discovery = {
+            "stateDbOnly": True,
+            "archived": archived,
+            "sourceKinds": source_kinds,
+            "parentThreadId": parent_thread_id,
+            "ancestorThreadId": ancestor_thread_id,
+            "continuationMapping": "unsupported",
+            "coverageLimits": [
+                "state_database_only",
+                "archive_and_source_partition",
+                "per_record_ancestry",
+                "continuation_mapping_unsupported",
+            ],
+        }
+        try:
+            page = await self.rpc.call("thread/list", params)
+        except RpcError as error:
+            code = error.error.get("code")
+            unsupported = code == -32601 or (
+                code == -32602 and "unsupported" in str(error.error.get("message", "")).lower()
+            )
+            return {
+                "data": None,
+                "nextCursor": None,
+                "discovery": {
+                    **discovery,
+                    "status": "unsupported"
+                    if unsupported
+                    else "rejected"
+                    if code == -32602
+                    else "unavailable",
+                    "pageComplete": False,
+                    "rpcError": error.error,
+                    "gap": "Requested discovery failed; no unfiltered fallback was read.",
+                },
+            }
+        valid_page = (
+            isinstance(page, dict)
+            and isinstance(page.get("data"), list)
+            and "nextCursor" in page
+            and (page["nextCursor"] is None or isinstance(page["nextCursor"], str))
+            and all(
+                isinstance(thread, dict)
+                and isinstance(thread.get("id"), str)
+                and bool(thread["id"])
+                for thread in page["data"]
+            )
+        )
+        if not valid_page:
+            return {
+                **(page if isinstance(page, dict) else {"upstreamResponse": page}),
+                "discovery": {
+                    **discovery,
+                    "status": "unsupported_schema",
+                    "pageComplete": False,
+                    "gap": "Expected identified thread headers and an explicit opaque nextCursor.",
+                },
+            }
+        return {
+            **page,
+            "discovery": {
+                **discovery,
+                "status": "returned",
+                "pageComplete": page.get("nextCursor") is None,
+                "relationships": [relationship_evidence(thread) for thread in page["data"]],
+            },
+        }
 
     async def read_thread(self, thread_id: str, limit=10, cursor=None, max_text_chars=4000):
         nonempty(thread_id, "thread_id", 128)
