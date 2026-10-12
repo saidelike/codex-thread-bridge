@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from .ledger import Ledger
-from .records import chunk_record, clipping_manifest, record_envelope
+from .records import chunk_record, clip_with_manifest, record_envelope
 from .rpc import AppServer, RpcError
 from .worktrees import Worktree, WorktreeError
 
@@ -94,16 +94,7 @@ def identity(settings):
 
 def clipped(value, limit: int, *, display_text: bool = False):
     """Bound display content while preserving opaque protocol fields verbatim."""
-    if display_text and isinstance(value, str) and len(value) > limit:
-        return value[:limit] + f"\n[truncated; original length {len(value)} characters]"
-    if isinstance(value, list):
-        return [clipped(item, limit, display_text=display_text) for item in value]
-    if isinstance(value, dict):
-        return {
-            key: clipped(item, limit, display_text=key in DISPLAY_FIELDS)
-            for key, item in value.items()
-        }
-    return value
+    return clip_with_manifest(value, limit, DISPLAY_FIELDS, display_text=display_text)[0]
 
 
 def relationship_evidence(thread):
@@ -870,9 +861,9 @@ class Bridge:
         metadata = await self.read_thread_metadata(thread_id)
         page = await self.read_thread_turns(thread_id, limit, cursor)
         raw = {"thread": metadata["record"]["thread"], "turnsPage": page["record"]}
-        fields = clipping_manifest(raw, max_text_chars, DISPLAY_FIELDS)
+        compact, fields = clip_with_manifest(raw, max_text_chars, DISPLAY_FIELDS)
         return {
-            **clipped(raw, max_text_chars),
+            **compact,
             "coverage": {
                 **page["coverage"],
                 "transportComplete": not fields,

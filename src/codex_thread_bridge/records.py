@@ -128,27 +128,33 @@ def reconstruct_record(chunks):
     return record_envelope(json.loads(text), source)
 
 
-def clipping_manifest(value, limit, display_fields, path="", display_text=False):
+def clip_with_manifest(value, limit, display_fields, path="", display_text=False):
+    """Clip display fields and record their JSON pointers in one traversal."""
     if display_text and isinstance(value, str) and len(value) > limit:
-        return [{"path": path, "originalLength": len(value), "retainedPrefixLength": limit}]
+        return (
+            value[:limit] + f"\n[truncated; original length {len(value)} characters]",
+            [{"path": path, "originalLength": len(value), "retainedPrefixLength": limit}],
+        )
     if isinstance(value, list):
-        return [
-            field
-            for index, item in enumerate(value)
-            for field in clipping_manifest(
+        clipped, manifest = [], []
+        for index, item in enumerate(value):
+            child, fields = clip_with_manifest(
                 item, limit, display_fields, f"{path}/{index}", display_text
             )
-        ]
+            clipped.append(child)
+            manifest.extend(fields)
+        return clipped, manifest
     if isinstance(value, dict):
-        return [
-            field
-            for key, item in value.items()
-            for field in clipping_manifest(
+        clipped, manifest = {}, []
+        for key, item in value.items():
+            child, fields = clip_with_manifest(
                 item,
                 limit,
                 display_fields,
                 path + "/" + key.replace("~", "~0").replace("/", "~1"),
                 key in display_fields,
             )
-        ]
-    return []
+            clipped[key] = child
+            manifest.extend(fields)
+        return clipped, manifest
+    return value, []
