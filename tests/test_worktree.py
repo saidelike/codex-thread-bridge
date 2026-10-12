@@ -82,7 +82,9 @@ async def test_dispatch_does_not_disconnect_concurrent_read(repository, tmp_path
             await ws.send(json.dumps({"id": message["id"], "result": result}))
             if method == "turn/start":
                 await release_read.wait()
-                await ws.send(json.dumps({"id": held_read, "result": {"data": []}}))
+                await ws.send(
+                    json.dumps({"id": held_read, "result": {"data": [], "nextCursor": None}})
+                )
 
     with tempfile.TemporaryDirectory(prefix="ctb-concurrent-") as directory:
         path = Path(directory) / "app.sock"
@@ -101,7 +103,9 @@ async def test_dispatch_does_not_disconnect_concurrent_read(repository, tmp_path
                     receipt = await bridge.send_message_to_thread("send", "thread", "hello")
                 assert receipt["status"] == "accepted", receipt
                 release_read.set()
-                assert await read == {"data": []}
+                listing = await read
+                assert listing["data"] == []
+                assert listing["discovery"]["status"] == "returned"
             finally:
                 release_read.set()
                 await rpc.close()

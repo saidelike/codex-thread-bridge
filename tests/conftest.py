@@ -28,6 +28,7 @@ class FakeServer:
         self.pause_after = None
         self.paused = asyncio.Event()
         self.release = asyncio.Event()
+        self.list_response = None
 
     def cursor(self, offset):
         return f"{offset}:" + "x" * self.cursor_padding
@@ -187,12 +188,24 @@ class FakeServer:
                 }
             elif method == "thread/list":
                 threads = [{**t, "turns": []} for t in self.threads.values()]
+                threads = [
+                    t for t in threads if t.get("archived", False) == params.get("archived", False)
+                ]
+                if params.get("sourceKinds"):
+                    threads = [t for t in threads if self.source_kind(t) in params["sourceKinds"]]
+                if params.get("parentThreadId"):
+                    threads = [t for t in threads if self.parent_id(t) == params["parentThreadId"]]
+                if params.get("ancestorThreadId"):
+                    ancestor = params["ancestorThreadId"]
+                    threads = [t for t in threads if self.has_ancestor(t, ancestor)]
                 start = self.offset(params.get("cursor"))
                 end = start + params["limit"]
                 result = {
                     "data": threads[start:end],
                     "nextCursor": self.cursor(end) if end < len(threads) else None,
                 }
+                if self.list_response is not None:
+                    result = self.list_response
             elif method == "thread/goal/get":
                 result = {"goal": self.goal}
             elif method == "project/read":
@@ -215,6 +228,46 @@ class FakeServer:
 
     def count(self, method):
         return sum(name == method for name, _ in self.calls)
+
+    def source_kind(self, thread):
+        source = thread.get("source", "appServer")
+        if isinstance(source, str):
+            return source
+        agent = source.get("subAgent")
+        if agent is None:
+            return "unknown"
+        if agent == "review":
+            return "subAgentReview"
+        if agent == "compact":
+            return "subAgentCompact"
+        return (
+            "subAgentThreadSpawn"
+            if isinstance(agent, dict) and "thread_spawn" in agent
+            else "subAgentOther"
+        )
+
+    def parent_id(self, thread):
+        spawn = thread.get("source", {})
+        if isinstance(spawn, dict):
+            spawn = spawn.get("subAgent", {})
+            if isinstance(spawn, dict):
+                spawn = spawn.get("thread_spawn", {})
+                if isinstance(spawn, dict) and spawn.get("parent_thread_id"):
+                    return thread.get("parentThreadId") or spawn["parent_thread_id"]
+        return thread.get("parentThreadId")
+
+    def has_ancestor(self, thread, ancestor):
+        if thread["id"] == ancestor:
+            return False
+        visited = {thread["id"]}
+        while parent := self.parent_id(thread):
+            if parent == ancestor:
+                return True
+            if parent in visited or parent not in self.threads:
+                return False
+            visited.add(parent)
+            thread = self.threads[parent]
+        return False
 
 
 @pytest.fixture
