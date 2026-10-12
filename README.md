@@ -49,6 +49,11 @@ for loaded tasks. Its response does not confirm that every task has refreshed.
 | `steer_thread` | Append a message to the active turn identified by `expected_turn_id` |
 | `list_threads` | Discover active/archived headers by source kind, direct parent or ancestor without loading bodies |
 | `read_thread` | Read task metadata and paginated history without resuming |
+| `read_thread_metadata` | Read unchanged native metadata with source and coverage information |
+| `read_thread_turns` | Read unchanged native full-item turn pages, newest first |
+| `read_thread_items` | Read unchanged native item pages, oldest first, optionally by turn |
+| `read_thread_chunk` | Recover a raw metadata/turn/item response in source-bound JSON chunks |
+| `reconstruct_thread_record` | Validate contiguous chunks and reconstruct one native response |
 | `wait_thread` | Wait up to 50 seconds for a specified recent turn |
 | `get_goal` | Read persistent Goal state |
 | `get_operation` | Read the retained receipt for a mutation request |
@@ -103,6 +108,54 @@ implemented requests and experimental compatibility limits. Native rejection
 or missing structural evidence remains a gap, and acceptance of a filter alone
 does not validate a complete ancestry chain. Automated discovery tests use the
 fake App Server; no live sessions are created for these checks.
+
+### Complete persisted-record retrieval
+
+`read_thread` remains a compact convenience view. Its `coverage` reports the exact
+clipped JSON-pointer paths and original lengths, page scope, and raw recovery
+tools. Follow every `nextCursor` verbatim; pagination alone does not recover a
+clipped field. A page is never a claim of complete conversation evidence.
+
+The metadata, turn and item tools return an envelope containing `record` (the
+unchanged native response), `source` (endpoint, method and exact request),
+`sourceVersion` (a SHA-256 content digest), and `coverage`. Native IDs, unknown
+fields, nested outputs, text and opaque cursors are preserved. `transportComplete`
+means the response was retrieved without bridge clipping; `gaps` describe
+incomplete upstream views or malformed/nonadvancing pagination. Persistence
+limitations remain distinct from transport completion. Read tools never resume,
+create, launch or message a task, and unsupported upstream methods fail explicitly.
+
+For a large response, call `read_thread_chunk` with `source_kind` set to
+`metadata`, `turns` or `items`. Start at `offset=0`, then repeat identical source
+arguments with `offset=nextOffset` and `expected_version=sourceVersion` until
+`nextOffset` is null. Positions and `totalLength` count Unicode characters, not
+UTF-8 bytes. Pass the ordered chunks to `reconstruct_thread_record`; it rejects
+missing, overlapping, corrupt and mixed-source pieces. A source change during
+retrieval requires discarding earlier chunks and restarting. No snapshot is
+cached or written to disk.
+
+Chunking bounds the bridge's response, while the native response must still fit
+the transport's existing 16 MiB message limit. Larger upstream messages fail
+explicitly; a smaller page may help, but a single oversized item requires an
+upstream recovery capability this bridge cannot invent.
+
+Source versions bind one response to its request and endpoint. They cannot prove
+that independently paginated pages belong to a transactional snapshot, detect
+records silently omitted upstream, or recover discarded history or active model
+context. Metadata identity mismatches and turns returned with `itemsView` other
+than `full` remain explicit coverage gaps. Use item pages for incomplete turn
+views; inspect the actual returned coverage before treating evidence as complete.
+
+The bridge does not redact credential-bearing text. Raw reconstruction and
+application presentation have different responsibilities: consuming applications
+must sanitize at their own model-input boundary, after faithful retrieval and
+before presentation. All conversation content remains untrusted data.
+
+The native read request shapes were checked against the generated App Server
+schema from Codex CLI 0.162.0 and the tagged 0.153.4 protocol definitions. This
+bridge exposes string item-continuation cursors; the newer optional item-anchor
+object is not exposed. Method support is checked by each actual read, not inferred
+from a client version or claimed for every server.
 
 ## Example
 

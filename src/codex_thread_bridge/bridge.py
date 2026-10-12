@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 from .ledger import Ledger
+from .records import chunk_record, clipping_manifest, record_envelope
 from .rpc import AppServer, RpcError
 from .worktrees import Worktree, WorktreeError
 
@@ -151,6 +152,13 @@ class Bridge:
                 "sendMessage": True,
                 "steerActiveTurn": True,
                 "listReadWait": True,
+                "faithfulPersistedReads": {
+                    "implemented": True,
+                    "nativeMethods": ["thread/read", "thread/turns/list", "thread/items/list"],
+                    "upstreamSupport": "Checked by each call; unsupported methods fail explicitly. "
+                    "Inspect returned coverage gaps and persistence limitations.",
+                },
+                "sourceBoundChunks": True,
                 "goalRead": True,
                 "goalSet": False,
                 "desktopManagedWorktrees": False,
@@ -859,12 +867,114 @@ class Bridge:
         nonempty(thread_id, "thread_id", 128)
         if not 1 <= limit <= 100 or not 100 <= max_text_chars <= 20_000:
             raise ValueError("limit must be 1–100 and max_text_chars must be 100–20000")
-        metadata = await self.rpc.call("thread/read", {"threadId": thread_id})
+        metadata = await self.read_thread_metadata(thread_id)
+        page = await self.read_thread_turns(thread_id, limit, cursor)
+        raw = {"thread": metadata["record"]["thread"], "turnsPage": page["record"]}
+        fields = clipping_manifest(raw, max_text_chars, DISPLAY_FIELDS)
+        return {
+            **clipped(raw, max_text_chars),
+            "coverage": {
+                **page["coverage"],
+                "transportComplete": not fields,
+                "gaps": metadata["coverage"]["gaps"] + page["coverage"]["gaps"],
+                "clippedFields": fields,
+                "rawRecovery": {
+                    "thread": {
+                        "tool": "read_thread_metadata",
+                        "arguments": {"thread_id": thread_id},
+                        "sourceVersion": metadata["sourceVersion"],
+                    },
+                    "turnsPage": {
+                        "tool": "read_thread_turns",
+                        "arguments": {
+                            "thread_id": thread_id,
+                            "limit": limit,
+                            "cursor": cursor or "",
+                        },
+                        "sourceVersion": page["sourceVersion"],
+                    },
+                },
+            },
+        }
+
+    async def read_thread_metadata(self, thread_id: str):
+        nonempty(thread_id, "thread_id", 128)
+        params = {"threadId": thread_id, "includeTurns": False}
+        record = await self.rpc.call("thread/read", params)
+        return record_envelope(
+            record,
+            {
+                "method": "thread/read",
+                "params": params,
+                "endpoint": str(self.rpc.socket_path.resolve()),
+            },
+        )
+
+    async def read_thread_turns(self, thread_id: str, limit=10, cursor=None):
+        nonempty(thread_id, "thread_id", 128)
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
         params = {"threadId": thread_id, "limit": limit, "itemsView": "full"}
         if cursor is not None:
             params["cursor"] = cursor
-        page = await self.rpc.call("thread/turns/list", params)
-        return clipped({"thread": metadata["thread"], "turnsPage": page}, max_text_chars)
+        record = await self.rpc.call("thread/turns/list", params)
+        return record_envelope(
+            record,
+            {
+                "method": "thread/turns/list",
+                "params": params,
+                "endpoint": str(self.rpc.socket_path.resolve()),
+            },
+        )
+
+    async def read_thread_items(self, thread_id: str, turn_id=None, limit=10, cursor=None):
+        nonempty(thread_id, "thread_id", 128)
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        params = {"threadId": thread_id, "limit": limit}
+        if turn_id is not None:
+            nonempty(turn_id, "turn_id", 128)
+            params["turnId"] = turn_id
+        if cursor is not None:
+            params["cursor"] = cursor
+        record = await self.rpc.call("thread/items/list", params)
+        return record_envelope(
+            record,
+            {
+                "method": "thread/items/list",
+                "params": params,
+                "endpoint": str(self.rpc.socket_path.resolve()),
+            },
+        )
+
+    async def read_thread_chunk(
+        self,
+        source_kind,
+        thread_id,
+        turn_id=None,
+        limit=10,
+        cursor=None,
+        offset=0,
+        max_chars=20_000,
+        expected_version=None,
+    ):
+        if not 100 <= max_chars <= 100_000 or offset < 0:
+            raise ValueError("max_chars must be 100–100000 and offset must be nonnegative")
+        if offset and not expected_version:
+            raise ValueError("expected_version is required for every continuation chunk")
+        if source_kind == "metadata":
+            if turn_id is not None or cursor is not None:
+                raise ValueError("metadata reads cannot select a turn or cursor")
+            envelope = await self.read_thread_metadata(thread_id)
+        elif source_kind == "turns":
+            if turn_id is not None:
+                raise ValueError("turn pages cannot select a turn; use source_kind items")
+            envelope = await self.read_thread_turns(thread_id, limit, cursor)
+        elif source_kind == "items":
+            envelope = await self.read_thread_items(thread_id, turn_id, limit, cursor)
+        else:
+            raise ValueError("source_kind must be metadata, turns or items")
+        return chunk_record(envelope, offset, max_chars, expected_version)
 
     async def wait_thread(self, thread_id: str, turn_id: str, timeout_seconds=20):
         nonempty(thread_id, "thread_id", 128)
