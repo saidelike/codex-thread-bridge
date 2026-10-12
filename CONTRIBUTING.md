@@ -3,11 +3,12 @@
 Use the development commands in the README. Keep the bridge independent of a
 specific repository, skill collection, Desktop installation, or user's paths.
 
-The modules have five responsibilities:
+The modules have six responsibilities:
 
 - `rpc.py`: multiplexed JSON-RPC over an existing Unix WebSocket connection.
 - `ledger.py`: durable mutation receipts and duplicate-request suppression.
 - `bridge.py`: behavior of the tools, including partial failures and bounded reads.
+- `records.py`: faithful record envelopes, source-bound chunks and coverage disclosure.
 - `worktrees.py`: validated, retained Git checkout preparation; no Desktop lifecycle.
 - `server.py`: MCP schemas, lifecycle, and command-line configuration.
 
